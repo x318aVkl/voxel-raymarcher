@@ -64,6 +64,7 @@ pub struct Object {
 
     cpu_nodes: Vec<Node>,
     cpu_child_list: Vec<u32>,
+    cpu_block_list: Vec<Block>,
 
     max_allocated_node: usize,
     available_nodes: Vec<usize>,
@@ -77,7 +78,7 @@ pub struct Object {
 pub const MAX_NODE_SIZE: usize = 262144;
 pub const CHILD_PER_NODE: usize = 8;
 pub const BLOOCK_PER_NODE: usize = 64;
-pub const MAX_LEVEL: u32 = 8;
+pub const MAX_LEVEL: u32 = 10;
 
 
 
@@ -104,7 +105,7 @@ impl Object {
 
         // data for non leaf node
         // 8 per non leaf node
-        let child_data = vec![NODE_EMPTY; MAX_NODE_SIZE * 8];
+        let child_data = vec![NODE_EMPTY; MAX_NODE_SIZE * CHILD_PER_NODE];
 
         let child_buffer = device.create_buffer_init(
             &BufferInitDescriptor {
@@ -117,12 +118,12 @@ impl Object {
 
         // data for leaf node, blocks
         // 64 per non leaf node
-        let data = vec![Block::VOID; MAX_NODE_SIZE * 64];
+        let block_data = vec![Block::VOID; MAX_NODE_SIZE * BLOOCK_PER_NODE];
 
         let blocks_buffer = device.create_buffer_init(
             &BufferInitDescriptor {
                 label: Some("Storage Buffer"),
-                contents: bytemuck::cast_slice(&data),
+                contents: bytemuck::cast_slice(&block_data),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             }
         );
@@ -154,6 +155,7 @@ impl Object {
             queue,
             cpu_child_list: child_data,
             cpu_nodes: node_data,
+            cpu_block_list: block_data,
             max_allocated_node: 1,
             available_nodes: vec![],
             max_allocated_child_group: 0,
@@ -184,7 +186,6 @@ impl Object {
             self.max_allocated_node += 1;
             idx as u32
         };
-        println!("Allocated new node base slot: {}", res);
         res
     }
 
@@ -196,7 +197,6 @@ impl Object {
             self.max_allocated_child_group += 1;
             (idx * CHILD_PER_NODE) as u32
         };
-        println!("Allocated child group base slot: {}", res);
         res
     }
 
@@ -208,7 +208,6 @@ impl Object {
             self.max_allocated_blocks_group += 1;
             (idx * BLOOCK_PER_NODE) as u32
         };
-        println!("Allocated block group base slot: {}", res);
         res
     }
 
@@ -222,7 +221,6 @@ impl Object {
         position: [u32; 3],
         block_data: [Block; 64]
     ) {
-        println!("\n=== Setting new block group ===");
         // start at the tree root
         let mut current_node_idx = 0;
 
@@ -289,8 +287,6 @@ impl Object {
 
                 // update the bitmask of the current node
                 current_node.bitmask |= 1 << (child_flat_idx as u64);
-                
-                println!("child_idx: {}, bits: {:064b}", child_flat_idx, current_node.bitmask);
 
                 new_child_node
             } else {
@@ -301,7 +297,6 @@ impl Object {
             // in any case, we need to queue the changes to the child list to the gpu
             // send the whole new child list
             // might be better to only send the child we changed, but anyway
-            println!("new child list at {} : {:?}", current_node_child_group_start, &self.cpu_child_list[(current_node_child_group_start as usize)..(current_node_child_group_start as usize + 8)]);
             self.queue.write_buffer(
                 &self.child_buffer,
                 (current_node_child_group_start as u64) * (std::mem::size_of::<u32>() as u64),
@@ -343,6 +338,9 @@ impl Object {
         }
 
         // send the block data to the gpu
+        for i in 0..block_data.len() {
+            self.cpu_block_list[leaf_node.children_ptr as usize + i] = block_data[i];
+        }
         let blocks_byte_offset = (leaf_node.children_ptr as u64) * (std::mem::size_of::<Block>() as u64);
         self.queue.write_buffer(
             &self.blocks_buffer,
@@ -357,7 +355,6 @@ impl Object {
                 mask |= 1 << (i as u64);
             }
         }
-        println!("block bitmask: {:064b}", mask);
         leaf_node.bitmask = mask;
 
         // set the new leaf node in both cpu and gpu buffers
@@ -370,6 +367,17 @@ impl Object {
         );
 
         // we are done!
+    }
+
+
+    pub fn allocator_info(&self) {
+        let node_alloc = self.max_allocated_node - self.available_nodes.len();
+        println!("allocated nodes: {} / {} ({:.2} %)", node_alloc, self.cpu_nodes.len(), (node_alloc as f32) / (self.cpu_nodes.len() as f32)*100.);
+        let child_alloc = self.max_allocated_child_group - self.available_child_group.len();
+        println!("allocated childs: {} / {} ({:.2} %)", child_alloc * 8, self.cpu_child_list.len() * 8, (child_alloc as f32) / (self.cpu_child_list.len() as f32)*100.);
+        let block_alloc = self.max_allocated_blocks_group - self.available_blocks_group.len();
+        println!("allocated blocks: {} / {} ({:.2} %)", block_alloc * 64, self.cpu_block_list.len() * 64, (block_alloc as f32) / (self.cpu_block_list.len() as f32)*100.);
+        
     }
     
 

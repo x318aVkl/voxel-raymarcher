@@ -1,9 +1,8 @@
 use std::{any::{Any, TypeId}, collections::HashMap, error::Error, sync::Arc};
 
-use wgpu::rwh::HasDisplayHandle;
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::Window};
 
-use crate::{camera::Camera, object::Object, renderer::Renderer};
+use crate::{camera::Camera, input::{Keyboard, Mouse}, object::Object, renderer::Renderer, time::Time};
 
 
 #[repr(usize)]
@@ -53,7 +52,7 @@ impl ApplicationHandler for App {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        window_id: winit::window::WindowId,
+        _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     )
     {
@@ -78,6 +77,12 @@ impl ApplicationHandler for App {
                 // can render here instead.
 
                 // run the update systems
+                // refresh the time resource
+                {
+                    let time = self.resource_mut::<Time>();
+                    time.refresh();
+                }
+
                 self.run_systems(Schedule::Update);
 
                 let camera = self.resource::<Camera>().transform().clone();
@@ -87,12 +92,28 @@ impl ApplicationHandler for App {
                     renderer.render(&self.objects);
                 }
                 self.window.as_ref().unwrap().request_redraw();
+
+                // also clear the keyboard just pressed
+                let keyboard = self.resource_mut::<Keyboard>();
+                keyboard.clear_just_pressed();
+                let mouse = self.resource_mut::<Mouse>();
+                mouse.clear_delta();
+                
             },
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
             },
+            WindowEvent::KeyboardInput { device_id: _, event, is_synthetic: _ } => {
+                let keyboard = self.resource_mut::<Keyboard>();
+                keyboard.on_keyboard_event(event);
+            },
+            WindowEvent::CursorMoved { device_id: _, position } => {
+                let new_pos = glam::Vec2::new(position.x as f32, position.y as f32);
+                let mouse = self.resource_mut::<Mouse>();
+                mouse.on_cursor_moved(new_pos);
+            }
             _ => (),
         }
     }
@@ -108,15 +129,12 @@ impl App {
             s.push(vec![]);
         }
 
-        let mut resources: HashMap<TypeId, Box<dyn Any>> = HashMap::new();
-        resources.insert(TypeId::of::<Camera>(), Box::new(Camera::new()));
-
         Self {
             window: None,
             renderer: None,
             objects: vec![],
             systems: s,
-            resources,
+            resources: Self::create_default_resources(),
         }
     }
 
@@ -169,6 +187,17 @@ impl App {
 
     pub fn object_mut(&mut self, handle: ObjectHandle) -> &mut Object {
         &mut self.objects[handle.0]
+    }
+
+    pub fn create_default_resources() -> HashMap<TypeId, Box<dyn Any>> {
+
+        let mut resources: HashMap<TypeId, Box<dyn Any>> = HashMap::new();
+        resources.insert(TypeId::of::<Camera>(), Box::new(Camera::new()));
+        resources.insert(TypeId::of::<Keyboard>(), Box::new(Keyboard::new()));
+        resources.insert(TypeId::of::<Mouse>(), Box::new(Mouse::new()));
+        resources.insert(TypeId::of::<Time>(), Box::new(Time::new()));
+
+        resources
     }
 }
 
