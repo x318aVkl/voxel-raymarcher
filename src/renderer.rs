@@ -33,6 +33,8 @@ pub struct Renderer {
 #[derive(Clone, Copy, bytemuck::NoUninit, bytemuck::AnyBitPattern)]
 pub struct Uniforms {
     camera_view: [[f32; 4]; 4],
+    aspect_ratio: f32,
+    padding: [f32; 15],
 }
 
 
@@ -172,8 +174,12 @@ impl Renderer {
             cache: None,
         });
 
+        let window_size = window.inner_size();
+
         let uniforms_data = Uniforms {
             camera_view: [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]],
+            aspect_ratio: (window_size.width as f32) / (window_size.height as f32),
+            padding: [0.0; 15],
         };
 
         let uniforms_buffer = device.create_buffer_init(
@@ -243,6 +249,15 @@ impl Renderer {
 
         // reconfigure the surface
         self.configure_surface();
+
+        // also update the gpu uniforms with the new aspect ratio
+        self.cpu_uniforms.aspect_ratio = (self.size.width as f32) / (self.size.height as f32);
+
+        self.queue.write_buffer(
+            &self.uniforms_buffer,
+            0,
+            bytemuck::cast_slice(&[self.cpu_uniforms]),
+        );
     }
 
 
@@ -329,6 +344,7 @@ impl Renderer {
 
     pub fn set_camera_transform(&mut self, t: glam::Mat4) {
         self.cpu_uniforms.camera_view = t.to_cols_array_2d();
+        self.cpu_uniforms.aspect_ratio = (self.size.width as f32) / (self.size.height as f32);
 
         self.queue.write_buffer(
             &self.uniforms_buffer,

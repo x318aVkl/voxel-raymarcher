@@ -27,6 +27,7 @@ struct Block {
 
 struct Uniforms {
     camera_view: mat4x4<f32>,
+    aspect_ratio: f32,
 }
 
 
@@ -247,13 +248,13 @@ fn offset(
     result.fract = raw_fract - vec3<f32>(int_offset);
 
     // 5. Sécurité d'arrondi flottant très stricte pour s'assurer de rester dans les bornes [0.0, 1.0]
-    while (result.fract.x >= 1.0) { result.grid.x += 1u; result.fract.x -= 1.0; }
-    while (result.fract.x <  0.0) { result.grid.x -= 1u; result.fract.x += 1.0; }
+    if (result.fract.x >  1.0) { result.grid.x += 1u; result.fract.x -= 1.0; }
+    if (result.fract.x <  0.0) { result.grid.x -= 1u; result.fract.x += 1.0; }
     
-    while (result.fract.y >= 1.0) { result.grid.y += 1u; result.fract.y -= 1.0; }
+    while (result.fract.y > 1.0) { result.grid.y += 1u; result.fract.y -= 1.0; }
     while (result.fract.y <  0.0) { result.grid.y -= 1u; result.fract.y += 1.0; }
     
-    while (result.fract.z >= 1.0) { result.grid.z += 1u; result.fract.z -= 1.0; }
+    while (result.fract.z > 1.0) { result.grid.z += 1u; result.fract.z -= 1.0; }
     while (result.fract.z <  0.0) { result.grid.z -= 1u; result.fract.z += 1.0; }
 
     return result;
@@ -670,7 +671,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let y = 2.0 * (1.0 - in.uv.y) - 1.0;
 
     let ray_target_world = vec3<f32>(
-        x, 
+        x * system.aspect_ratio, 
         y, 
         1.0
     );

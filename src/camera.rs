@@ -10,7 +10,7 @@ pub struct Camera {
 
 impl Camera {
     pub fn new() -> Self {
-        Self { rotation: Mat3::IDENTITY, translation: Vec3::ZERO, }
+        Self { rotation: Mat3::IDENTITY, translation: Vec3::ZERO }
     }
 
     pub fn transform(&self) -> Mat4 {

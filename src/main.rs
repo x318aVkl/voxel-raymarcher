@@ -44,12 +44,9 @@ fn create_objects(app: &mut App) {
         }
     }
 
-    let w = 40;
-    for k in (-w)..=w {
-        for i in (-w)..=w {
-            app.object_mut(world).set_block_at([i, 0, k], block_data);
-        }
-    }
+    app.object_mut(world).set_block_at([0, 0, 0], block_data);
+    app.object_mut(world).set_block_at([0, 1, 0], block_data);
+    app.object_mut(world).set_block_at([-1, 0, 0], block_data);
 
     app.object_mut(world).allocator_info();
 }
@@ -89,7 +86,7 @@ fn move_camera(app: &mut App) {
     }
     cam.translate(delta * dt);
 
-
+    /*
     let delta = mouse.delta() * dt;
     if delta.x.abs() > 1e-5 {
         cam.rotate(up, delta.x);
@@ -97,4 +94,5 @@ fn move_camera(app: &mut App) {
     if delta.y.abs() > 1e-5 {
         cam.rotate(side, delta.y);
     }
+    */
 }
