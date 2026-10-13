@@ -264,8 +264,7 @@ impl Object {
             let child_flat_idx = child[0] + child[1]*2 + child[2]*4;
 
             // check if the child group is allocated, if not allocate
-            let mask = current_node.bitmask.to_le_bytes()[0];
-            let child_node_idx = if (mask & (1 << child_flat_idx)) == 0 {
+            let child_node_idx = if (current_node.bitmask & (1 << child_flat_idx)) == 0 {
                 // the children is not allocated, allocate it and update both the children group and bitmask
                 let new_child_node = self.allocate_node();
 
@@ -290,6 +289,8 @@ impl Object {
 
                 // update the bitmask of the current node
                 current_node.bitmask |= 1 << (child_flat_idx as u64);
+                
+                println!("child_idx: {}, bits: {:064b}", child_flat_idx, current_node.bitmask);
 
                 new_child_node
             } else {
@@ -300,9 +301,10 @@ impl Object {
             // in any case, we need to queue the changes to the child list to the gpu
             // send the whole new child list
             // might be better to only send the child we changed, but anyway
+            println!("new child list at {} : {:?}", current_node_child_group_start, &self.cpu_child_list[(current_node_child_group_start as usize)..(current_node_child_group_start as usize + 8)]);
             self.queue.write_buffer(
                 &self.child_buffer,
-                current_node_child_group_start as u64,
+                (current_node_child_group_start as u64) * (std::mem::size_of::<u32>() as u64),
                 bytemuck::cast_slice(&self.cpu_child_list[(current_node_child_group_start as usize)..(current_node_child_group_start as usize + 8)]),
             );
 
@@ -355,6 +357,7 @@ impl Object {
                 mask |= 1 << (i as u64);
             }
         }
+        println!("block bitmask: {:064b}", mask);
         leaf_node.bitmask = mask;
 
         // set the new leaf node in both cpu and gpu buffers

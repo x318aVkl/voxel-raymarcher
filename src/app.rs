@@ -1,9 +1,9 @@
-use std::{collections::HashMap, error::Error, sync::Arc};
+use std::{any::{Any, TypeId}, collections::HashMap, error::Error, sync::Arc};
 
 use wgpu::rwh::HasDisplayHandle;
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::Window};
 
-use crate::{object::Object, renderer::Renderer};
+use crate::{camera::Camera, object::Object, renderer::Renderer};
 
 
 #[repr(usize)]
@@ -22,6 +22,8 @@ pub struct App {
     objects: Vec<Object>,
 
     systems: Vec<Vec<Box<dyn Fn(&mut App)>>>,
+
+    resources: HashMap<TypeId, Box<dyn Any>>,
 }
 
 
@@ -78,7 +80,10 @@ impl ApplicationHandler for App {
                 // run the update systems
                 self.run_systems(Schedule::Update);
 
+                let camera = self.resource::<Camera>().transform().clone();
+
                 if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.set_camera_transform(camera);
                     renderer.render(&self.objects);
                 }
                 self.window.as_ref().unwrap().request_redraw();
@@ -102,11 +107,16 @@ impl App {
         for _ in 0..N_SCHEDULES {
             s.push(vec![]);
         }
+
+        let mut resources: HashMap<TypeId, Box<dyn Any>> = HashMap::new();
+        resources.insert(TypeId::of::<Camera>(), Box::new(Camera::new()));
+
         Self {
             window: None,
             renderer: None,
             objects: vec![],
             systems: s,
+            resources,
         }
     }
 
@@ -115,6 +125,14 @@ impl App {
         self.systems[schedule as usize].push(Box::new(system));
 
         self
+    }
+
+    pub fn resource<T: 'static>(&self) -> &T {
+        self.resources.get(&TypeId::of::<T>()).unwrap().downcast_ref().unwrap()
+    }
+
+    pub fn resource_mut<T: 'static>(&mut self) -> &mut T {
+        self.resources.get_mut(&TypeId::of::<T>()).unwrap().downcast_mut().unwrap()
     }
 
 
@@ -140,9 +158,6 @@ impl App {
 
         Ok(())
     }
-
-
-
 
     pub fn create_object(&mut self) -> ObjectHandle {
         let renderer = self.renderer.as_ref().unwrap();

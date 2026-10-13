@@ -1,14 +1,16 @@
-use crate::{app::{App, Schedule}, object::Block};
+use crate::{app::{App, Schedule}, camera::Camera, object::Block};
 
 
 mod app;
 mod renderer;
 mod object;
+mod camera;
 
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     App::new()
         .add_system(Schedule::Startup, create_objects)
+        .add_system(Schedule::Update, move_camera)
         .run()
 }
 
@@ -28,7 +30,6 @@ fn create_objects(app: &mut App) {
                     (j as f32) / 3. * 2.0 - 1.0,
                     (k as f32) / 3. * 2.0 - 1.0,
                 );
-                println!("{:?}, {:?}", pos, pos.length());
                 if k > 0 {
                     block_data[i + j*4 + k*16] = Block::GRASS;
                 }
@@ -40,6 +41,15 @@ fn create_objects(app: &mut App) {
     }
 
     app.object_mut(world).set_block_at([0, 0, 0], block_data);
-    app.object_mut(world).set_block_at([1, 0, 0], block_data);
+    app.object_mut(world).set_block_at([-1, -1, 0], block_data);
+    app.object_mut(world).set_block_at([-1, 0, 0], block_data);
+    app.object_mut(world).set_block_at([0, 1, 0], block_data);
 
+}
+
+
+fn move_camera(app: &mut App) {
+    let cam = app.resource_mut::<Camera>();
+
+    cam.translate(glam::Vec3::new(-0.01, -0.01, 0.));
 }

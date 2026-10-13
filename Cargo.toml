@@ -9,3 +9,6 @@ glam = "0.34.1"
 pollster = "1.0.1"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[profile.dev]
+opt-level = 1

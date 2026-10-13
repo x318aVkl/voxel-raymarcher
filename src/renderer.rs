@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use wgpu::util::DeviceExt;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
 use crate::object::Object;
@@ -19,6 +20,19 @@ pub struct Renderer {
     object_shader_module: wgpu::ShaderModule,
     object_render_pipeline: wgpu::RenderPipeline,
     object_bind_group_layout: wgpu::BindGroupLayout,
+
+    uniforms_buffer: wgpu::Buffer,
+    uniforms_bind_group: wgpu::BindGroup,
+    uniforms_bind_group_layout: wgpu::BindGroupLayout,
+
+    cpu_uniforms: Uniforms,
+}
+
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::NoUninit, bytemuck::AnyBitPattern)]
+pub struct Uniforms {
+    camera_view: [[f32; 4]; 4],
 }
 
 
@@ -102,10 +116,27 @@ impl Renderer {
                 },
             ],
         });
+        let uniforms_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("object pipeline uniform bind group layout"),
+            entries: &[
+                // the uniforms buffer object for the camera
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    count: None,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Uniform, 
+                        has_dynamic_offset: false, 
+                        min_binding_size: None, 
+                    }
+                },
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("object pipeline layout"),
             immediate_size: 0,
             bind_group_layouts: &[
+                Some(&uniforms_bind_group_layout),
                 Some(&bind_group_layout),
             ],
         });
@@ -141,6 +172,31 @@ impl Renderer {
             cache: None,
         });
 
+        let uniforms_data = Uniforms {
+            camera_view: [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]],
+        };
+
+        let uniforms_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Storage Buffer"),
+                contents: bytemuck::cast_slice(&[uniforms_data]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+
+
+        let uniforms_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("object uniforms bind group"),
+            layout: &uniforms_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms_buffer.as_entire_binding(),
+                },
+            ]
+        });
+
+
         let renderer = Renderer {
             instance,
             window,
@@ -152,6 +208,10 @@ impl Renderer {
             object_shader_module: shader,
             object_render_pipeline: pipeline,
             object_bind_group_layout: bind_group_layout,
+            uniforms_bind_group_layout,
+            uniforms_buffer,
+            uniforms_bind_group,
+            cpu_uniforms: uniforms_data
         };
 
         // Configure surface for the first time
@@ -245,11 +305,13 @@ impl Renderer {
         // If you wanted to call any drawing commands, they would go here.
         renderpass.set_pipeline(&self.object_render_pipeline);
 
+        renderpass.set_bind_group(0, &self.uniforms_bind_group, &[]);
+
         for object in objects {
             // draw the object
             // bind the objects buffer
             
-            renderpass.set_bind_group(0, object.bind_group(), &[]);
+            renderpass.set_bind_group(1, object.bind_group(), &[]);
 
             renderpass.draw(0..3, 0..1); 
         }
@@ -262,6 +324,17 @@ impl Renderer {
         self.window.pre_present_notify();
         self.queue.present(surface_texture);
 
+    }
+
+
+    pub fn set_camera_transform(&mut self, t: glam::Mat4) {
+        self.cpu_uniforms.camera_view = t.to_cols_array_2d();
+
+        self.queue.write_buffer(
+            &self.uniforms_buffer,
+            0,
+            bytemuck::cast_slice(&[self.cpu_uniforms]),
+        );
     }
 
 }
