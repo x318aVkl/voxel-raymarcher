@@ -1,6 +1,53 @@
 
 use wgpu::{Buffer, util::{BufferInitDescriptor, DeviceExt}};
 
+pub use palette::rgb::Rgba as GenericColor;
+
+pub type Color = GenericColor<palette::Srgb<u8>, u8>;
+
+
+
+pub trait ToVec4 {
+    fn to_vec4(self) -> glam::Vec4;
+}
+
+impl ToVec4 for Color {
+    fn to_vec4(self) -> glam::Vec4 {
+        glam::Vec4::new(
+            (self.red as f32) / 255.,
+            (self.green as f32) / 255.,
+            (self.blue as f32) / 255.,
+            (self.alpha as f32) / 255.,
+        )
+    }
+}
+
+pub trait IntoColor {
+    fn to_color(self) -> Color;
+}
+
+impl IntoColor for Color {
+    fn to_color(self) -> Color {
+        Color::new(self.red, self.green, self.blue, self.alpha)
+    }
+}
+
+
+impl IntoColor for palette::rgb::Srgb<u8> {
+    fn to_color(self) -> Color {
+        Color::new(self.red, self.green, self.blue, 255)
+    }
+}
+impl IntoColor for [f32; 3] {
+    fn to_color(self) -> Color {
+        Color::new((self[0] * 255.) as u8, (self[1] * 255.) as u8, (self[2] * 255.) as u8, 255)
+    }
+}
+impl IntoColor for [f32; 4] {
+    fn to_color(self) -> Color {
+        Color::new((self[0] * 255.) as u8, (self[1] * 255.) as u8, (self[2] * 255.) as u8, (self[3] * 255.) as u8)
+    }
+}
 
 
 // 32 bits, 4 bytes per block
@@ -70,6 +117,9 @@ pub struct Object {
     available_child_group: Vec<usize>,
     max_allocated_blocks_group: usize,
     available_blocks_group: Vec<usize>,
+
+    cpu_palette: Vec<[f32; 4]>,
+    palette_buffer: Buffer,
 }
 
 
@@ -135,6 +185,15 @@ impl Object {
             }
         );
 
+        let cpu_palette = vec![Color::new(255, 255, 255, 255).to_vec4().to_array(); u16::MAX as usize];
+        let palette_buffer = device.create_buffer_init(
+            &BufferInitDescriptor {
+                label: Some("Storage Blocks Buffer"),
+                contents: bytemuck::cast_slice(&cpu_palette),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("object bind group"),
             layout: bind_group_layout,
@@ -150,7 +209,11 @@ impl Object {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: blocks_buffer.as_entire_binding(),
-                }
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: palette_buffer.as_entire_binding(),
+                },
             ]
         });
 
@@ -169,6 +232,8 @@ impl Object {
             available_child_group: vec![],
             max_allocated_blocks_group: 0,
             available_blocks_group: vec![],
+            cpu_palette,
+            palette_buffer,
         }
 
     }
@@ -432,6 +497,23 @@ impl Object {
             (position[2] + base_halfwidth) as u32,
         ];
         self.set_block_at_inner(world_position, block_data);
+    }
+
+    pub fn set_block_color(
+        &mut self,
+        block: u16,
+        color: impl IntoColor,
+    ) {
+        let color = color.to_color();
+        let color = color.to_vec4().to_array();
+
+        self.cpu_palette[block as usize] = color;
+
+        self.queue.write_buffer(
+            &self.palette_buffer,
+            (block as u64) * (std::mem::size_of::<[f32; 4]>() as u64),
+            bytemuck::bytes_of(&color),
+        );
     }
 }
 

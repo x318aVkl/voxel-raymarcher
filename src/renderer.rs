@@ -125,6 +125,16 @@ impl Renderer {
                         min_binding_size: std::num::NonZero::new((crate::object::WORLD_SIZE * crate::object::BLOCK_PER_NODE / crate::object::BLOCK_BUFFER_REDUCTION * std::mem::size_of::<crate::object::Block>()) as u64), 
                     }
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    count: None,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Storage { read_only: true }, 
+                        has_dynamic_offset: false, 
+                        min_binding_size: std::num::NonZero::new(((u16::MAX as usize) * std::mem::size_of::<[f32; 4]>()) as u64), 
+                    }
+                },
             ],
         });
         let uniforms_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

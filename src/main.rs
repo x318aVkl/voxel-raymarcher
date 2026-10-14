@@ -13,7 +13,7 @@ mod time;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     App::new()
-        .add_system(Schedule::Startup, create_spawner)
+        .add_system(Schedule::Startup, setup)
         .add_system(Schedule::Update, move_camera)
         .add_system(Schedule::Update, update_spawner)
         .add_system(Schedule::Update, check_exit)
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
 
-fn create_spawner(app: &mut App) {
+fn setup(app: &mut App) {
 
     // create the world object
     let world = app.create_object(crate::object::WORLD_SIZE);
@@ -44,7 +44,8 @@ fn create_spawner(app: &mut App) {
     }
     // println!("{:?}", block_data);
 
-    //app.object_mut(world).set_block_at([0, 0, 0], block_data);
+    app.object_mut(world).set_block_color(1, [0.1, 0.1, 0.1]);
+    app.object_mut(world).set_block_color(2, palette::named::FORESTGREEN);
 
     // for i in (-200)..=200 {
     //     for j in (-200)..=200 {
@@ -52,7 +53,7 @@ fn create_spawner(app: &mut App) {
     //     }
     // }
 
-    app.insert_resource(Spawner { current_id: 0, world, block_data, max_distance: 50 })
+    app.insert_resource(Spawner { current_id: 0, world, block_data, max_distance: 10 });
 }
 
 

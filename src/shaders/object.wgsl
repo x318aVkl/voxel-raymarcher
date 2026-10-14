@@ -36,6 +36,7 @@ struct Uniforms {
 @group(1) @binding(0) var<storage, read> nodes: array<Node>;
 @group(1) @binding(1) var<storage, read> child_list: array<u32>;
 @group(1) @binding(2) var<storage, read> blocks_list: array<Block>;
+@group(1) @binding(3) var<storage, read> color_palette: array<vec4<f32>>;
 
 
 
@@ -860,23 +861,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     */
 
     if (result.hit.id != 0) {
-        if (result.hit.id == 1) {
-            return vec4<f32>(0.05, 0.05, 0.05, 1.0);
-        } else if (result.hit.id == 2) {
-            return vec4<f32>(0.2, 0.6, 0.1, 1.0);
-        } else if (result.hit.id == 3) {
-            return vec4<f32>(0., 0., 1., 1.0);
-        } else if (result.hit.id == 4) {
-            return vec4<f32>(1., 1., 0., 1.0);
-        } else if (result.hit.id == 5) {
-            return vec4<f32>(1., 0., 1., 1.0);
-        } else if (result.hit.id == 6) {
-            return vec4<f32>(0., 1., 1., 1.0);
-        } else if (result.hit.id == 7) {
-            return vec4<f32>(1., 0.5, 0., 1.0);
-        } else if (result.hit.id == 8) {
-            return vec4<f32>(0., 0.5, 1., 1.0);
-        }
+        return color_palette[result.hit.id];
     }
 
     /*
