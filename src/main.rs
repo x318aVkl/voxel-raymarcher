@@ -34,9 +34,9 @@ fn setup(app: &mut App) {
 
                 if j < 5 {
                     if k >= 2 {
-                        block_data[i + j*4 + k*16] = Block::STONE;
+                        block_data[i + j*4 + k*16] = Block::new(1);
                     } else {
-                        block_data[i + j*4 + k*16] = Block::GRASS;
+                        block_data[i + j*4 + k*16] = Block::new(3);
                     }
                 }
             }
@@ -44,8 +44,7 @@ fn setup(app: &mut App) {
     }
     // println!("{:?}", block_data);
 
-    app.object_mut(world).set_block_color(1, [0.1, 0.1, 0.1]);
-    app.object_mut(world).set_block_color(2, palette::named::FORESTGREEN);
+    app.object_mut(world).load_palette_from_bytes(include_bytes!("../assets/palette.png")).unwrap();
 
     // for i in (-200)..=200 {
     //     for j in (-200)..=200 {

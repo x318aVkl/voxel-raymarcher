@@ -1,4 +1,6 @@
 
+use std::io::Cursor;
+
 use wgpu::{Buffer, util::{BufferInitDescriptor, DeviceExt}};
 
 pub use palette::rgb::Rgba as GenericColor;
@@ -50,6 +52,12 @@ impl IntoColor for [f32; 4] {
 }
 
 
+impl IntoColor for image::Rgba<u8> {
+    fn to_color(self) -> Color {
+        Color::new(self.0[0], self.0[1], self.0[2], self.0[3])
+    }
+}
+
 // 32 bits, 4 bytes per block
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::NoUninit, bytemuck::AnyBitPattern)]
@@ -64,6 +72,10 @@ impl Block {
     pub const STONE: Block = Block {id: 1};
 
     pub const GRASS: Block = Block {id: 2};
+
+    pub fn new(id: u16) -> Self {
+        Self {id: id as u32}
+    }
 }
 
 
@@ -514,6 +526,42 @@ impl Object {
             (block as u64) * (std::mem::size_of::<[f32; 4]>() as u64),
             bytemuck::bytes_of(&color),
         );
+    }
+
+    #[allow(dead_code)]
+    pub fn load_palette_from_file(&mut self, file: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let img = image::ImageReader::open(file)?.decode()?;
+        let img = img.to_rgba8();
+
+        self.load_palette_from_image(img);
+
+        Ok(())
+    }
+
+    pub fn load_palette_from_bytes(&mut self, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        let img = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?.decode()?;
+        let img = img.to_rgba8();
+
+        self.load_palette_from_image(img);
+        Ok(())
+    }
+
+    pub fn load_palette_from_image(&mut self, image: image::RgbaImage) {
+
+        for i in 0..image.width() {
+            for j in 0..image.height() {
+                let k = i + j * image.width();
+
+                if k == 0 {
+                    continue;
+                }
+
+                let px = image.get_pixel(i, j).to_color();
+
+                self.set_block_color(k as u16, px);
+            }
+        }
+
     }
 }
 
