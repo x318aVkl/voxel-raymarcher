@@ -1,6 +1,6 @@
 use std::{any::{Any, TypeId}, collections::HashMap, error::Error, sync::Arc};
 
-use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::Window};
+use winit::{application::ApplicationHandler, dpi::LogicalSize, event::{DeviceEvent, WindowEvent}, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowAttributes}};
 
 use crate::{camera::Camera, input::{Keyboard, Mouse}, object::Object, renderer::Renderer, time::Time};
 
@@ -30,10 +30,18 @@ pub struct App {
 impl ApplicationHandler for App {
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = event_loop.create_window(Window::default_attributes()).unwrap();
+        let window = event_loop.create_window(WindowAttributes::default()
+            .with_inner_size(LogicalSize::new(1920, 1080))
+        ).unwrap();
 
         let window = Arc::new(window);
         self.window = Some(Arc::clone(&window));
+
+        window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Confined))
+            .unwrap();
+
+        window.set_cursor_visible(false);
 
         self.renderer = Some(
             pollster::block_on(Renderer::new(
@@ -48,6 +56,21 @@ impl ApplicationHandler for App {
         self.run_systems(Schedule::Startup);
     }
 
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    )
+    {
+        match event {
+            DeviceEvent::MouseMotion { delta } => {
+                let mouse = self.resource_mut::<Mouse>();
+                mouse.on_mouse_delta(glam::Vec2::new(delta.0 as f32, delta.1 as f32));
+            },
+            _ => {}
+        }
+    }
 
     fn window_event(
         &mut self,
@@ -85,6 +108,11 @@ impl ApplicationHandler for App {
 
                 self.run_systems(Schedule::Update);
 
+                if self.window.is_none() {
+                    event_loop.exit();
+                    return;
+                }
+
                 let camera = self.resource::<Camera>().transform().clone();
 
                 if let Some(renderer) = self.renderer.as_mut() {
@@ -113,7 +141,7 @@ impl ApplicationHandler for App {
                 let new_pos = glam::Vec2::new(position.x as f32, position.y as f32);
                 let mouse = self.resource_mut::<Mouse>();
                 mouse.on_cursor_moved(new_pos);
-            }
+            },
             _ => (),
         }
     }
@@ -138,11 +166,19 @@ impl App {
         }
     }
 
+    pub fn exit(&mut self) {
+        self.window = None;
+    }
+
     pub fn add_system(&mut self, schedule: Schedule, system: impl Fn(&mut App) + 'static) -> &mut Self {
 
         self.systems[schedule as usize].push(Box::new(system));
 
         self
+    }
+
+    pub fn insert_resource<T: 'static>(&mut self, res: T) {
+        self.resources.insert(TypeId::of::<T>(), Box::new(res));
     }
 
     pub fn resource<T: 'static>(&self) -> &T {
@@ -177,10 +213,10 @@ impl App {
         Ok(())
     }
 
-    pub fn create_object(&mut self) -> ObjectHandle {
+    pub fn create_object(&mut self, size: usize) -> ObjectHandle {
         let renderer = self.renderer.as_ref().unwrap();
 
-        self.objects.push(Object::new(renderer.device().clone(), renderer.queue().clone(), renderer.object_bind_group_layout()));
+        self.objects.push(Object::new(renderer.device().clone(), renderer.queue().clone(), renderer.object_bind_group_layout(), size));
         
         ObjectHandle(self.objects.len() - 1)
     }

@@ -23,9 +23,12 @@ impl Camera {
         self.translation += delta;
     }
 
-    pub fn rotate(&mut self, axis: Vec3, angle: f32) {
-        let rot_block = Mat3::from_axis_angle(axis, angle);
-        self.rotation = rot_block * self.rotation;
+    pub fn rotate_pitch_yaw(&mut self, pitch: f32, yaw: f32) {
+
+        let yaw_mat = Mat3::from_axis_angle(Vec3::Y, yaw);
+        let pitch_mat = Mat3::from_axis_angle(Vec3::X, pitch);
+
+        self.rotation = yaw_mat * self.rotation * pitch_mat;
     }
 
     pub fn get_local(&self, axis: Vec3) -> Vec3 {

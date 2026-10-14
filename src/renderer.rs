@@ -17,12 +17,14 @@ pub struct Renderer {
     surface: wgpu::Surface<'static>,
     surface_format: wgpu::TextureFormat,
     
+    #[allow(dead_code)]
     object_shader_module: wgpu::ShaderModule,
     object_render_pipeline: wgpu::RenderPipeline,
     object_bind_group_layout: wgpu::BindGroupLayout,
 
     uniforms_buffer: wgpu::Buffer,
     uniforms_bind_group: wgpu::BindGroup,
+    #[allow(dead_code)]
     uniforms_bind_group_layout: wgpu::BindGroupLayout,
 
     cpu_uniforms: Uniforms,
@@ -63,9 +65,16 @@ impl Renderer {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .unwrap();
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_features: wgpu::Features::SHADER_INT64,
+                required_limits: wgpu::Limits {
+                    max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
+                    max_buffer_size: adapter.limits().max_buffer_size,
+                    ..wgpu::Limits::defaults()
+                },
+                memory_hints: wgpu::MemoryHints::Performance,
                 ..Default::default()
             })
             .await
@@ -93,7 +102,7 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { 
                         ty: wgpu::BufferBindingType::Storage { read_only: true }, 
                         has_dynamic_offset: false, 
-                        min_binding_size: std::num::NonZero::new((crate::object::MAX_NODE_SIZE * std::mem::size_of::<crate::object::Node>()) as u64), 
+                        min_binding_size: std::num::NonZero::new((crate::object::WORLD_SIZE * std::mem::size_of::<crate::object::Node>()) as u64), 
                     }
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -103,7 +112,7 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { 
                         ty: wgpu::BufferBindingType::Storage { read_only: true }, 
                         has_dynamic_offset: false, 
-                        min_binding_size: std::num::NonZero::new((crate::object::MAX_NODE_SIZE * crate::object::CHILD_PER_NODE * std::mem::size_of::<u32>()) as u64), 
+                        min_binding_size: std::num::NonZero::new((crate::object::WORLD_SIZE * crate::object::CHILD_PER_NODE / crate::object::CHILD_BUFFER_REDUCTION * std::mem::size_of::<u32>()) as u64), 
                     }
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -113,7 +122,7 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer { 
                         ty: wgpu::BufferBindingType::Storage { read_only: true }, 
                         has_dynamic_offset: false, 
-                        min_binding_size: std::num::NonZero::new((crate::object::MAX_NODE_SIZE * crate::object::BLOOCK_PER_NODE * std::mem::size_of::<crate::object::Block>()) as u64), 
+                        min_binding_size: std::num::NonZero::new((crate::object::WORLD_SIZE * crate::object::BLOCK_PER_NODE / crate::object::BLOCK_BUFFER_REDUCTION * std::mem::size_of::<crate::object::Block>()) as u64), 
                     }
                 },
             ],

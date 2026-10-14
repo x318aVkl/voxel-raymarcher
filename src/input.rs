@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 
-use glam::{UVec2, Vec2};
-use winit::{event::KeyEvent, keyboard::PhysicalKey, platform::modifier_supplement::KeyEventExtModifierSupplement};
+use glam::Vec2;
+use winit::{event::KeyEvent, keyboard::PhysicalKey};
 pub use winit::keyboard::KeyCode as Key;
 
 
@@ -68,11 +68,12 @@ impl Mouse {
             self.initialized = true;
         }
     }
+    pub fn on_mouse_delta(&mut self, delta: Vec2) {
+        self.delta = delta;
+        self.position += delta;
+    }
     pub fn clear_delta(&mut self) {
         self.delta = Vec2::ZERO;
-    }
-    pub fn position(&self) -> Vec2 {
-        self.position
     }
     pub fn delta(&self) -> Vec2 {
         self.delta

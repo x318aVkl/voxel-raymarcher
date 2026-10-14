@@ -18,10 +18,6 @@ impl Time {
         self.last = new;
     }
 
-    pub fn now(&self) -> Instant {
-        self.last
-    }
-
     pub fn delta(&self) -> Duration {
         self.delta
     }

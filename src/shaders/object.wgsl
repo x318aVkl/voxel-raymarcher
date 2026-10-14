@@ -283,11 +283,8 @@ fn get_ray_traversal_bitmask(
     //     select(0u, 2u, direction.y > 0.0),
     //     select(0u, 4u, direction.z > 0.0)
     // );
-    let step_bit = vec3<u32>(
-        1u,
-        2u,
-        4u,
-    );
+    let step_bit = vec3<u32>(1u, 2u, 4u);
+
 
     // 3. Calculer la distance 't' linéaire exacte pour atteindre chaque plan médian
     // On n'effectue la division que si le rayon se déplace sur cet axe pour éviter le NaN
@@ -300,9 +297,6 @@ fn get_ray_traversal_bitmask(
     if (abs(direction.y) > 1e-5) {
         ty = (half_width_f - local_source.y) / direction.y;
     }
-    // 128 - 128.9
-    // direction = -1.0
-    // ty = 0.9
     
     var tz = 1e38;
     if (abs(direction.z) > 1e-5) {
@@ -313,8 +307,6 @@ fn get_ray_traversal_bitmask(
     var current_id = start_id;
     // ex. 0010 for id 2, x = 0, y = 1, z = 0
     let eps = 1e-4;
-
-    // 
 
     // Nous effectuons 3 passes indépendantes pour accumuler tous les quadrants traversés 
     // par ordre chronologique de distance.
@@ -329,7 +321,7 @@ fn get_ray_traversal_bitmask(
 
         // Si aucune cloison n'est devant le rayon ou si on sort de la cellule (t > 1.0)
         // thats an error, we exit if (position +/- t) > bounding box
-        if ((min_t / cell_width_f) > 1.0 + eps) { 
+        if ((0.5 * min_t / cell_width_f) > (1.0 + eps)) { 
             break; 
         }
         n += 1;
@@ -342,7 +334,7 @@ fn get_ray_traversal_bitmask(
         } else if (min_t == valid_y) {
             current_id ^= step_bit.y;
             ty = -1e38;
-        } else {
+        } else if (min_t == valid_z) {
             current_id ^= step_bit.z;
             tz = -1e38;
         }
@@ -407,7 +399,66 @@ fn check_ray_intersect_nonleaf(
     //return select(0u, 1u, abs(local_source.x - 127.9) < 1e-4);
     //return u32(ray_traversal_mask);
 
-    // 3. Comparaison native en u32 (Uint, width: 4)
+    // check if there is any hit
+    let active_intersections = bitmask & ray_traversal_mask;
+    if (active_intersections == u64(0u)) {
+        return NODE_EMPTY; 
+    }
+
+    var closest_child_id: u32 = NODE_EMPTY;
+    var min_distance: f32 = 1e30;
+
+    // 4. Boucle d'élection géométrique
+    for (var child_id = 0u; child_id < 8u; child_id += 1) {
+        
+        // CORRECTION DE TYPE : Toutes les constantes et variables ici sont des u32 (width: 4)
+        let mask_shift: u64 = u64(1u) << child_id;
+        let is_bit_set: bool = (active_intersections & mask_shift) != u64(0u);
+        
+        if (is_bit_set) {
+            let i = child_id & 1u;
+            let j = (child_id >> 1u) & 1u;
+            let k = child_id >> 2u;
+
+            let child_offset = vec3<f32>(f32(i), f32(j), f32(k));
+            let child_min = child_offset * half_width_f;
+            let child_max = child_min + vec3<f32>(half_width_f);
+
+            let dist = get_child_aabb_distance(local_source, ray_direction, child_min, child_max);
+
+            if (dist < min_distance) {
+                min_distance = dist;
+                closest_child_id = child_id;
+            }
+        }
+    }
+
+    return closest_child_id;
+}
+
+
+
+fn check_ray_intersect_nonleaf_fmod(
+    bitmask: u64,
+    ray_position: WorldPosition,
+    ray_direction: vec3<f32>,
+    cell_corner_position: vec3<u32>,
+    cell_corner_offset: vec3<f32>,
+    cell_width: f32,
+) -> u32 {
+    let grid_diff = vec3<i32>(ray_position.grid) - vec3<i32>(cell_corner_position);
+    let local_source = vec3<f32>(grid_diff) + ray_position.fract - cell_corner_offset;
+    let cell_width_f = f32(cell_width);
+    let half_width_f = cell_width_f * 0.5;
+
+    // 2. Récupérer le masque de trajectoire (converti explicitement en u32 pour la suite)
+    let ray_traversal_mask = get_ray_traversal_bitmask(local_source, ray_direction, cell_width_f);
+
+    //return select(0u, 1u, (ray_traversal_mask & (u64(1u) << 4)) != u64(0u));
+    //return select(0u, 1u, abs(local_source.x - 127.9) < 1e-4);
+    //return u32(ray_traversal_mask);
+
+    // check if there is any hit
     let active_intersections = bitmask & ray_traversal_mask;
     if (active_intersections == u64(0u)) {
         return NODE_EMPTY; 
@@ -447,10 +498,105 @@ fn check_ray_intersect_nonleaf(
 
 
 
+fn get_ray_traversal_bitmask_leaf(
+    local_source: vec3<f32>,
+    direction: vec3<f32>,
+    cell_width_f: f32,
+) -> u64 {
+    let half_width_f = cell_width_f * 0.5;
+
+    // consider the cell as a group of 8 possible subcells
+    // this will lead to the same logic as before
+    // set all bits of the subcells accordingly
+    var mask = u64(0);
+    for (var child = 0u; child < 8u; child += 1) {
+        let i = child % 2u;
+        let j = (child / 2u) % 2u;
+        let k = child / 4u;
+
+        let child_offset = vec3<f32>(f32(i), f32(j), f32(k));
+        let child_min = child_offset * half_width_f;
+        let child_max = child_min + vec3<f32>(half_width_f);
+
+        let dist = get_child_aabb_distance(local_source, direction, child_min, child_max);
+        if (dist < 1e30) {
+            let local_bitmask = get_ray_traversal_bitmask(local_source + direction * dist - child_min, direction, half_width_f) & u64(255);
+            mask |= (local_bitmask << (child * 8));
+        }
+    }
+
+    return mask;
+}
+
+fn check_ray_intersect_leaf(
+    bitmask: u64,
+    ray_position: WorldPosition,
+    ray_direction: vec3<f32>,
+    cell_corner_position: vec3<u32>,
+    cell_width: u32,
+) -> u32 {
+
+    // get the subchild ray traversal mask
+
+    let grid_diff = vec3<i32>(ray_position.grid) - vec3<i32>(cell_corner_position);
+    let local_source = vec3<f32>(grid_diff) + ray_position.fract;
+    let cell_width_f = f32(cell_width);
+    let half_width_f = cell_width_f * 0.5;
+
+    let ray_traversal_mask = get_ray_traversal_bitmask(local_source, ray_direction, cell_width_f);
+
+    // for each child, get the submask and check if any hit
+    var closest_child_id = NODE_EMPTY;
+    var min_dist = 1e30;
+
+    for (var child = 0u; child < 8u; child += 1) {
+        let mask_shift: u64 = u64(1u) << child;
+        let is_bit_set: bool = (ray_traversal_mask & mask_shift) != u64(0u);
+
+        if (is_bit_set) {
+            // get the local child mask and intersect
+            let child_mask = (bitmask >> (child * 8)) & u64(255);
+
+            let i = child & 1u;
+            let j = (child >> 1u) & 1u;
+            let k = child >> 2u;
+
+            let child_offset = vec3<f32>(f32(i), f32(j), f32(k));
+
+            let hit = check_ray_intersect_nonleaf_fmod(
+                child_mask,
+                ray_position,
+                ray_direction,
+                cell_corner_position,
+                child_offset * half_width_f,
+                half_width_f
+            );
+
+            if hit != NODE_EMPTY {
+                let dist = get_child_aabb_distance(
+                    local_source, 
+                    ray_direction, 
+                    child_offset*half_width_f, 
+                    child_offset*half_width_f + vec3<f32>(half_width_f)
+                );
+
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    closest_child_id = child * 8 + hit;
+                }
+            }
+        }
+    }
+
+
+    return closest_child_id;
+}
 
 
 
-fn raymarch(
+
+
+fn single_raymarch(
     source: WorldPosition,
     direction: vec3<f32>,
     max_distance: f32,
@@ -496,7 +642,29 @@ fn raymarch(
         // if the current node if a leaf, check if the ray intersects the nodes blocks using the node bitmask
         if (node.leaf == 1) {
             // for now, return directly the hit as if the child was full
-            return RaymarchResult(Block(1u), actual_steps, max_distance);
+
+            let hit = check_ray_intersect_leaf(
+                extract_bitmask(node),
+                position,
+                direction,
+                item.corner,
+                width,
+            );
+
+            if (hit == NODE_EMPTY) {
+                // remove ourself from the stack and move through ourself
+
+                let t_range = ray_box_distance(position, direction, item.corner, width); 
+                position = offset(position, direction * max(t_range.y, 1e-4) );
+                position = offset(position, sign(direction) * 0.0001);
+
+                node_stack_pop();
+            } else {
+                // we did hit a block
+                // get the block from the block buffer
+                let block_hit = blocks_list[node.children_ptr + hit];
+                return RaymarchResult(block_hit, actual_steps, max_distance);
+            }
         } else {
             // this is not a leaf node
             // if this node has children, we have to check if the children that contains our current position is allocated
@@ -509,13 +677,6 @@ fn raymarch(
                 item.corner,
                 width,
             );
-
-
-            //return RaymarchResult(Block(0u), hit, max_distance);
-
-            //max_stack_depth = select(0u, 1u, (hit == NODE_EMPTY) && (actual_steps == 1));
-
-            //return RaymarchResult(Block(0u), select(0u, 1u, hit == NODE_EMPTY), max_distance);
 
             if (hit != NODE_EMPTY) {
                 // --- CAS A : ON DESCEND VERS UN ENFANT OCCUPÉ ---
@@ -542,15 +703,8 @@ fn raymarch(
                     //position = offset(position, direction * 1e-1);
 
                     // move directly
-                    position = offset(position, direction * t_range.x);
-                    position = offset(position, sign(direction) * 0.01);
-                
-                    if (actual_steps == 1) {
-                        //return RaymarchResult(Block(0u), select(0u, 1u, abs(t_range.y - 128.0) < 1e-4), max_distance);
-                    }
-                    
-                    // Pas besoin de gros offset, un infime epsilon directionnel pour passer la face (ex: 1e-4)
-                    //position = offset(position, direction * 1e-3);
+                    position = offset(position, direction * max(t_range.x, 1e-4));
+                    position = offset(position, sign(direction) * 0.0001);
                 }
 
             } else {
@@ -559,10 +713,9 @@ fn raymarch(
                 //position = offset(position, direction * 1e-2);
 
                 let t_range = ray_box_distance(position, direction, item.corner, width); 
-                position = offset(position, direction * t_range.y );
-                position = offset(position, sign(direction) * 0.01);
+                position = offset(position, direction * max(t_range.y, 1e-4) );
+                position = offset(position, sign(direction) * 0.0001);
 
-                //actual_steps += 1;
                 
                 node_stack_pop(); // On le supprime, le 'continue' du prochain tour remontera la pile proprement si besoin
             }
@@ -691,7 +844,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let world_offset = system.camera_view * vec4<f32>(0., 0., 0., 1.);
     camera_root_world = offset(camera_root_world, world_offset.xyz);
 
-    let result = raymarch(
+    let result = single_raymarch(
         camera_root_world,
         dir,
         2e10,
@@ -708,9 +861,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if (result.hit.id != 0) {
         if (result.hit.id == 1) {
+            return vec4<f32>(0.05, 0.05, 0.05, 1.0);
+        } else if (result.hit.id == 2) {
+            return vec4<f32>(0.2, 0.6, 0.1, 1.0);
+        } else if (result.hit.id == 3) {
+            return vec4<f32>(0., 0., 1., 1.0);
+        } else if (result.hit.id == 4) {
+            return vec4<f32>(1., 1., 0., 1.0);
+        } else if (result.hit.id == 5) {
+            return vec4<f32>(1., 0., 1., 1.0);
+        } else if (result.hit.id == 6) {
+            return vec4<f32>(0., 1., 1., 1.0);
+        } else if (result.hit.id == 7) {
             return vec4<f32>(1., 0.5, 0., 1.0);
-        } else {
-            return vec4<f32>(0., 1., 0., 1.0);
+        } else if (result.hit.id == 8) {
+            return vec4<f32>(0., 0.5, 1., 1.0);
         }
     }
 

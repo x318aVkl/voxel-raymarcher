@@ -1,13 +1,11 @@
-use std::sync::Arc;
 
-use bytemuck::NoUninit;
 use wgpu::{Buffer, util::{BufferInitDescriptor, DeviceExt}};
 
 
 
 // 32 bits, 4 bytes per block
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::NoUninit, bytemuck::AnyBitPattern)]
+#[derive(Clone, Copy, Debug, bytemuck::NoUninit, bytemuck::AnyBitPattern)]
 pub struct Block {
     /// block type
     id: u32,
@@ -75,10 +73,15 @@ pub struct Object {
 }
 
 
-pub const MAX_NODE_SIZE: usize = 262144;
+pub const WORLD_SIZE: usize = 4194304;
 pub const CHILD_PER_NODE: usize = 8;
-pub const BLOOCK_PER_NODE: usize = 64;
+pub const BLOCK_PER_NODE: usize = 64;
+pub const CHILD_BUFFER_REDUCTION: usize = 2;
+pub const BLOCK_BUFFER_REDUCTION: usize = 2;
 pub const MAX_LEVEL: u32 = 10;
+
+
+
 
 
 
@@ -90,14 +93,18 @@ impl Object {
         device: wgpu::Device,
         queue: wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
+        size: usize,
     ) -> Self {
 
-        let mut node_data = vec![Node::EMPTY; MAX_NODE_SIZE];
+        let size = size.next_power_of_two();
+
+
+        let mut node_data = vec![Node::EMPTY; size];
         node_data[0] = Node::ROOT;
 
         let nodes_buffer = device.create_buffer_init(
             &BufferInitDescriptor {
-                label: Some("Storage Buffer"),
+                label: Some("Storage Nodes Buffer"),
                 contents: bytemuck::cast_slice(&node_data),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             }
@@ -105,11 +112,11 @@ impl Object {
 
         // data for non leaf node
         // 8 per non leaf node
-        let child_data = vec![NODE_EMPTY; MAX_NODE_SIZE * CHILD_PER_NODE];
+        let child_data = vec![NODE_EMPTY; size * CHILD_PER_NODE / CHILD_BUFFER_REDUCTION];
 
         let child_buffer = device.create_buffer_init(
             &BufferInitDescriptor {
-                label: Some("Storage Buffer"),
+                label: Some("Storage Childs Buffer"),
                 contents: bytemuck::cast_slice(&child_data),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             }
@@ -118,11 +125,11 @@ impl Object {
 
         // data for leaf node, blocks
         // 64 per non leaf node
-        let block_data = vec![Block::VOID; MAX_NODE_SIZE * BLOOCK_PER_NODE];
+        let block_data = vec![Block::VOID; size * BLOCK_PER_NODE / BLOCK_BUFFER_REDUCTION];
 
         let blocks_buffer = device.create_buffer_init(
             &BufferInitDescriptor {
-                label: Some("Storage Buffer"),
+                label: Some("Storage Blocks Buffer"),
                 contents: bytemuck::cast_slice(&block_data),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             }
@@ -202,11 +209,11 @@ impl Object {
 
     fn allocate_blocks_group(&mut self) -> u32 {
         let res = if let Some(idx) = self.available_blocks_group.pop() {
-            (idx * BLOOCK_PER_NODE) as u32
+            (idx * BLOCK_PER_NODE) as u32
         } else {
             let idx = self.max_allocated_blocks_group;
             self.max_allocated_blocks_group += 1;
-            (idx * BLOOCK_PER_NODE) as u32
+            (idx * BLOCK_PER_NODE) as u32
         };
         res
     }
@@ -337,24 +344,57 @@ impl Object {
             leaf_node.children_ptr = self.allocate_blocks_group();
         }
 
+        // reorder the block data to be in subblocks
+        let mut block_data_reordered = block_data;
+        for block in 0..8 {
+            let bi = block % 2;
+            let bj = (block / 2 ) % 2;
+            let bk = block / 4;
+            let bid = bi + bj*2 + bk*4;
+            for i in 0..2 {
+                for j in 0..2 {
+                    for k in 0..2 {
+                        let idx = (i + bi*2) + (j + bj*2) * 4 + (k + bk*2) * 16;
+                        let lid = i + 2*j + 4*k;
+                        block_data_reordered[bid*8 + lid] = block_data[idx];
+                    }
+                }
+            }
+        }
+
         // send the block data to the gpu
-        for i in 0..block_data.len() {
-            self.cpu_block_list[leaf_node.children_ptr as usize + i] = block_data[i];
+        for i in 0..block_data_reordered.len() {
+            self.cpu_block_list[leaf_node.children_ptr as usize + i] = block_data_reordered[i];
         }
         let blocks_byte_offset = (leaf_node.children_ptr as u64) * (std::mem::size_of::<Block>() as u64);
         self.queue.write_buffer(
             &self.blocks_buffer,
             blocks_byte_offset,
-            bytemuck::cast_slice(&block_data),
+            bytemuck::cast_slice(&block_data_reordered),
         );
+
 
         // update the bitmask
         let mut mask = 0_u64;
-        for i in 0..64 {
-            if block_data[i].id != 0 {
-                mask |= 1 << (i as u64);
+        for block in 0..8 {
+            let mut block_mask = 0u64;
+            let bi = block % 2;
+            let bj = (block / 2 ) % 2;
+            let bk = block / 4;
+            let bid = bi + bj*2 + bk*4;
+            for i in 0..8 {
+                if block_data_reordered[bid*8 + i].id != 0 {
+                    block_mask |= 1u64 << i;
+                }
             }
+            mask |= block_mask << (block * 8);
         }
+        //println!("mask: {:064b}", mask);
+        // for i in 0..64 {
+        //     if block_data[i].id != 0 {
+        //         mask |= 1 << (i as u64);
+        //     }
+        // }
         leaf_node.bitmask = mask;
 
         // set the new leaf node in both cpu and gpu buffers
@@ -374,10 +414,9 @@ impl Object {
         let node_alloc = self.max_allocated_node - self.available_nodes.len();
         println!("allocated nodes: {} / {} ({:.2} %)", node_alloc, self.cpu_nodes.len(), (node_alloc as f32) / (self.cpu_nodes.len() as f32)*100.);
         let child_alloc = self.max_allocated_child_group - self.available_child_group.len();
-        println!("allocated childs: {} / {} ({:.2} %)", child_alloc * 8, self.cpu_child_list.len() * 8, (child_alloc as f32) / (self.cpu_child_list.len() as f32)*100.);
+        println!("allocated childs: {} / {} ({:.2} %)", child_alloc * CHILD_PER_NODE, self.cpu_child_list.len(), ((child_alloc * CHILD_PER_NODE) as f32) / (self.cpu_child_list.len() as f32)*100.);
         let block_alloc = self.max_allocated_blocks_group - self.available_blocks_group.len();
-        println!("allocated blocks: {} / {} ({:.2} %)", block_alloc * 64, self.cpu_block_list.len() * 64, (block_alloc as f32) / (self.cpu_block_list.len() as f32)*100.);
-        
+        println!("allocated blocks: {} / {} ({:.2} %)", block_alloc * BLOCK_PER_NODE, self.cpu_block_list.len(), ((block_alloc * BLOCK_PER_NODE) as f32) / (self.cpu_block_list.len() as f32)*100.);
     }
     
 
