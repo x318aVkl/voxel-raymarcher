@@ -58,6 +58,8 @@ impl IntoColor for image::Rgba<u8> {
     }
 }
 
+
+
 // 32 bits, 4 bytes per block
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::NoUninit, bytemuck::AnyBitPattern)]
@@ -79,16 +81,48 @@ impl Block {
 }
 
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::NoUninit, bytemuck::AnyBitPattern, PartialEq)]
+pub struct NodeFlags(u32);
+
 
 // 40 bytes per node
+// parent is not needed since we keep a traversal stack
+// data was also unused
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::NoUninit, bytemuck::AnyBitPattern, PartialEq)]
 pub struct Node {
     children_ptr: u32,
-    leaf: u32,
-    parent: u32,
-    data: u32,
+    flags: NodeFlags,
     bitmask: u64,
+}
+
+impl Node {
+    const fn bitflags(
+        leaf: bool,
+        fill_block: Option<u16>,
+    ) -> NodeFlags {
+        let mut flags = 0u32;
+
+        // the first bit says if this is a leaf cell or not
+        if leaf {
+            flags |= 1u32;
+        }
+
+        // the second bit says wheter this is a filled cell, same kind of block
+        // if so, the last 16 bits of the flags give the block id
+        if let Some(block) = fill_block {
+            flags |= 2u32;
+            flags |= (block as u32) << 16;
+        }
+
+        NodeFlags(flags)
+    }
+
+    pub fn leaf(&self) -> bool {
+        // check if the first bit is set
+        (self.flags.0 & 1u32) != 0u32
+    }
 }
 
 
@@ -97,16 +131,12 @@ const NODE_EMPTY: u32 = 4294967295;
 impl Node {
     pub const ROOT: Node = Node {
         children_ptr: NODE_EMPTY,
-        leaf: 0,
-        parent: NODE_EMPTY,
-        data: 0,
+        flags: Self::bitflags(false, None),
         bitmask: 0,
     };
     pub const EMPTY: Node = Node {
         children_ptr: NODE_EMPTY,
-        leaf: 0,
-        parent: NODE_EMPTY,
-        data: 1,
+        flags: Self::bitflags(false, None),
         bitmask: 0,
     };
 }
@@ -135,11 +165,11 @@ pub struct Object {
 }
 
 
-pub const WORLD_SIZE: usize = 4194304;
+pub const WORLD_SIZE: usize = 16777216;
 pub const CHILD_PER_NODE: usize = 8;
 pub const BLOCK_PER_NODE: usize = 64;
-pub const CHILD_BUFFER_REDUCTION: usize = 2;
-pub const BLOCK_BUFFER_REDUCTION: usize = 2;
+pub const CHILD_BUFFER_REDUCTION: usize = 4;
+pub const BLOCK_BUFFER_REDUCTION: usize = 8;
 pub const MAX_LEVEL: u32 = 10;
 
 
@@ -260,6 +290,12 @@ impl Object {
 
 
 
+pub enum FillBlockData {
+    Single(Block),
+    Region([Block; BLOCK_PER_NODE]),
+}
+
+
 
 impl Object {
     fn allocate_node(&mut self) -> u32 {
@@ -303,7 +339,7 @@ impl Object {
     fn set_block_at_inner(
         &mut self,
         position: [u32; 3],
-        block_data: [Block; 64]
+        block_data: FillBlockData,
     ) {
         // start at the tree root
         let mut current_node_idx = 0;
@@ -321,7 +357,7 @@ impl Object {
             let mut current_node = self.cpu_nodes[current_node_idx];
             let starting_node = current_node;
 
-            if current_node.leaf == 1 {
+            if current_node.leaf() {
                 // we found a leaf node! break with it
                 break current_node;
             }
@@ -350,12 +386,12 @@ impl Object {
                 // the children is not allocated, allocate it and update both the children group and bitmask
                 let new_child_node = self.allocate_node();
 
+                let is_leaf = (level + 1) == MAX_LEVEL;
+
                 self.cpu_nodes[new_child_node as usize] = Node {
                     children_ptr: NODE_EMPTY,
-                    leaf: if (level + 1) == MAX_LEVEL {1} else {0},
+                    flags: Node::bitflags(is_leaf, None),
                     bitmask: 0,
-                    parent: current_node_idx as u32,
-                    data: 0,
                 };
 
                 // queue the changes to the new child node to send to the gpu
@@ -414,65 +450,71 @@ impl Object {
 
         // handle the leaf node we got
 
-        // check if the leaf node has an allocated block group, if not allocate it, update bitmask, and send the data
-        // if it does, update bitmask and send the data, overwriting it
-        if leaf_node.children_ptr == NODE_EMPTY {
-            // unallocated, allocate it
-            leaf_node.children_ptr = self.allocate_blocks_group();
-        }
+        match block_data {
 
-        // reorder the block data to be in subblocks
-        let mut block_data_reordered = block_data;
-        for block in 0..8 {
-            let bi = block % 2;
-            let bj = (block / 2 ) % 2;
-            let bk = block / 4;
-            let bid = bi + bj*2 + bk*4;
-            for i in 0..2 {
-                for j in 0..2 {
-                    for k in 0..2 {
-                        let idx = (i + bi*2) + (j + bj*2) * 4 + (k + bk*2) * 16;
-                        let lid = i + 2*j + 4*k;
-                        block_data_reordered[bid*8 + lid] = block_data[idx];
+            FillBlockData::Single(block) => {
+                // all the cube if filled with a single block
+                // just set the flag for that and store the block id
+                leaf_node.flags = Node::bitflags(leaf_node.leaf(), Some(block.id as u16));
+            },
+
+            FillBlockData::Region(block_data) => {
+
+                // check if the leaf node has an allocated block group, if not allocate it, update bitmask, and send the data
+                // if it does, update bitmask and send the data, overwriting it
+                if leaf_node.children_ptr == NODE_EMPTY {
+                    // unallocated, allocate it
+                    leaf_node.children_ptr = self.allocate_blocks_group();
+                }
+
+                // reorder the block data to be in subblocks
+                let mut block_data_reordered = block_data;
+                for block in 0..8 {
+                    let bi = block % 2;
+                    let bj = (block / 2 ) % 2;
+                    let bk = block / 4;
+                    let bid = bi + bj*2 + bk*4;
+                    for i in 0..2 {
+                        for j in 0..2 {
+                            for k in 0..2 {
+                                let idx = (i + bi*2) + (j + bj*2) * 4 + (k + bk*2) * 16;
+                                let lid = i + 2*j + 4*k;
+                                block_data_reordered[bid*8 + lid] = block_data[idx];
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        // send the block data to the gpu
-        for i in 0..block_data_reordered.len() {
-            self.cpu_block_list[leaf_node.children_ptr as usize + i] = block_data_reordered[i];
-        }
-        let blocks_byte_offset = (leaf_node.children_ptr as u64) * (std::mem::size_of::<Block>() as u64);
-        self.queue.write_buffer(
-            &self.blocks_buffer,
-            blocks_byte_offset,
-            bytemuck::cast_slice(&block_data_reordered),
-        );
-
-
-        // update the bitmask
-        let mut mask = 0_u64;
-        for block in 0..8 {
-            let mut block_mask = 0u64;
-            let bi = block % 2;
-            let bj = (block / 2 ) % 2;
-            let bk = block / 4;
-            let bid = bi + bj*2 + bk*4;
-            for i in 0..8 {
-                if block_data_reordered[bid*8 + i].id != 0 {
-                    block_mask |= 1u64 << i;
+                // send the block data to the gpu
+                for i in 0..block_data_reordered.len() {
+                    self.cpu_block_list[leaf_node.children_ptr as usize + i] = block_data_reordered[i];
                 }
+                let blocks_byte_offset = (leaf_node.children_ptr as u64) * (std::mem::size_of::<Block>() as u64);
+                self.queue.write_buffer(
+                    &self.blocks_buffer,
+                    blocks_byte_offset,
+                    bytemuck::cast_slice(&block_data_reordered),
+                );
+
+
+                // update the bitmask
+                let mut mask = 0_u64;
+                for block in 0..8 {
+                    let mut block_mask = 0u64;
+                    let bi = block % 2;
+                    let bj = (block / 2 ) % 2;
+                    let bk = block / 4;
+                    let bid = bi + bj*2 + bk*4;
+                    for i in 0..8 {
+                        if block_data_reordered[bid*8 + i].id != 0 {
+                            block_mask |= 1u64 << i;
+                        }
+                    }
+                    mask |= block_mask << (block * 8);
+                }
+                leaf_node.bitmask = mask;
             }
-            mask |= block_mask << (block * 8);
         }
-        //println!("mask: {:064b}", mask);
-        // for i in 0..64 {
-        //     if block_data[i].id != 0 {
-        //         mask |= 1 << (i as u64);
-        //     }
-        // }
-        leaf_node.bitmask = mask;
 
         // set the new leaf node in both cpu and gpu buffers
         self.cpu_nodes[current_node_idx] = leaf_node;
@@ -508,7 +550,21 @@ impl Object {
             (position[1] + base_halfwidth) as u32,
             (position[2] + base_halfwidth) as u32,
         ];
-        self.set_block_at_inner(world_position, block_data);
+        self.set_block_at_inner(world_position, FillBlockData::Region(block_data));
+    }
+
+    pub fn set_block_fill(
+        &mut self,
+        position: [i64; 3],
+        block: Block,
+    ) {
+        let base_halfwidth = Self::level_size(1) as i64;
+        let world_position = [
+            (position[0] + base_halfwidth) as u32,
+            (position[1] + base_halfwidth) as u32,
+            (position[2] + base_halfwidth) as u32,
+        ];
+        self.set_block_at_inner(world_position, FillBlockData::Single(block));
     }
 
     pub fn set_block_color(
@@ -563,6 +619,23 @@ impl Object {
         }
 
     }
+}
+
+
+
+
+// so we need a cpu raycast capability
+// here we go again
+
+impl Object {
+
+    pub fn raycast(
+        source: glam::DVec3,
+        direction: glam::Vec3,
+    ) -> Option<Block> {
+        todo!()
+    }
+
 }
 
 

@@ -7,13 +7,10 @@ struct Node {
     // contains either NODE_EMPTY if its empty
     // or a value to the start of its 64 sized region of blocks (4 by 4 by 4) or 8 sized of children (2 by 2 by 2)
     children_ptr: u32,
+    // flags, first bit is the leaf indicator bit
     // if leaf is set (1), this is a leaf node, and children_ptr points to blocks
     // if leaf is unset (0), this is not a leaf node, and children_ptr points to the child list
-    leaf: u32,
-    // the parent of this node, NODE_EMPTY if it is the root
-    parent: u32,
-    // filler value
-    data: u32,
+    flags: u32,
     // 64 bits, if bit i is set to 1, a block is there
     bitmask_low: u32,
     bitmask_high: u32,
@@ -65,8 +62,10 @@ struct WorldPosition {
 
 struct RaymarchResult {
     hit: Block,
+    normal: vec3<f32>,
     steps: u32,
     distance: f32,
+    position: WorldPosition,
 }
 
 struct StoredStackNode {
@@ -93,7 +92,7 @@ fn node_stack_push(node: Node, node_ptr: u32, corner: vec3<u32>) -> u32 {
 
 fn node_stack_peek() -> StoredStackNode {
     if (NODE_STACK_SIZE == 0) {
-        let node: Node = Node(0, 0, 0, 0, 0, 0);
+        let node: Node = Node(0, 0, 0, 0);
         return StoredStackNode(node, NODE_EMPTY, vec3<u32>(0, 0, 0));
     }
     return node_stack[NODE_STACK_SIZE - 1];
@@ -101,7 +100,7 @@ fn node_stack_peek() -> StoredStackNode {
 
 fn node_stack_pop() -> StoredStackNode {
     if (NODE_STACK_SIZE == 0) {
-        let node: Node = Node(0, 0, 0, 0, 0, 0);
+        let node: Node = Node(0, 0, 0, 0);
         return StoredStackNode(node, NODE_EMPTY, vec3<u32>(0, 0, 0));
     }
     NODE_STACK_SIZE -= 1;
@@ -145,6 +144,48 @@ fn ray_box_distance(
     return vec2<f32>(t_enter, t_exit);
 }
 
+fn ray_box_distance_subdivided(
+    source: WorldPosition,
+    direction: vec3<f32>,
+    box_corner: vec3<u32>,
+    box_width: u32,
+    child_id: u32,
+) -> vec2<f32> {
+    // 1. Soustraction sécurisée en i32 pour éviter les underflows u32
+    let grid_diff = vec3<i32>(source.grid) - vec3<i32>(box_corner);
+    let local_source = vec3<f32>(grid_diff) + source.fract;
+    let child = child_id / 8u;
+    let subchild = child_id % 8u;
+
+    let block_i = child & 1u;
+    let block_j = (child >> 1u) & 1u;
+    let block_k = child >> 2u;
+
+    let sub_i = subchild & 1u;
+    let sub_j = (subchild >> 1u) & 1u;
+    let sub_k = subchild >> 2u;
+
+    let local_target_min = (vec3<f32>(vec3<u32>(block_i, block_j, block_k)) * 0.5 + vec3<f32>(vec3<u32>(sub_i, sub_j, sub_k)) * 0.25) * f32(box_width);
+    let local_target_max = local_target_min + vec3<f32>(f32(box_width) * 0.25);
+
+    // 2. Éviter les divisions par zéro
+    //let inv_dir = vec3<f32>(1.0) / (direction + select(vec3<f32>(1e-6), vec3<f32>(-1e-6), direction < vec3<f32>(0.0)));
+    let inv_dir = vec3<f32>(1.0) / select(direction, sign(direction) * 1e-6, abs(direction) < vec3<f32>(1e-6));
+
+    // 3. Calculer les intersections avec les plans min et max de la boîte
+    let t0 = (local_target_min - local_source) * inv_dir;
+    let t1 = (local_target_max - local_source) * inv_dir;
+
+    // 4. Trier pour avoir t_min (entrée) et t_max (sortie) sur chaque axe
+    let t_min_axes = min(t0, t1);
+    let t_max_axes = max(t0, t1);
+
+    // 5. Réduire les axes pour trouver l'intervalle global de la boîte
+    let t_enter = max(max(t_min_axes.x, t_min_axes.y), t_min_axes.z);
+    let t_exit = min(min(t_max_axes.x, t_max_axes.y), t_max_axes.z);
+
+    return vec2<f32>(t_enter, t_exit);
+}
 
 
 fn ray_box_intersect(
@@ -595,6 +636,148 @@ fn check_ray_intersect_leaf(
 
 
 
+fn get_child_aabb_hit_face(
+    local_source: vec3<f32>,
+    direction: vec3<f32>,
+    child_min: vec3<f32>,
+    child_max: vec3<f32>
+) -> i32 {
+    // 1. Protection contre les divisions par zéro
+    let inv_dir = 1.0 / (direction + select(vec3<f32>(1e-6), vec3<f32>(-1e-6), direction < vec3<f32>(0.0)));
+
+    let t0 = (child_min - local_source) * inv_dir;
+    let t1 = (child_max - local_source) * inv_dir;
+
+    // t_min_axes contient la distance pour heurter la face d'entrée de chaque axe individuel
+    let t_min_axes = min(t0, t1);
+    let t_max_axes = max(t0, t1);
+
+    let t_enter = max(max(t_min_axes.x, t_min_axes.y), t_min_axes.z);
+    let t_exit  = min(min(t_max_axes.x, t_max_axes.y), t_max_axes.z);
+
+    let eps = 1e-3;
+    
+    // 2. Vérifier si le rayon traverse mathématiquement la boîte
+    if (t_enter <= t_exit + eps && t_exit >= -eps) {
+        
+        // Si le rayon commence déjà strictement à l'intérieur, il n'y a pas d'impact de face d'entrée.
+        // On retourne 0 (pas de face heurtée au démarrage interne)
+        if (t_enter < -eps) {
+            return 0;
+        }
+
+        // 3. Déterminer quel axe correspond au t_enter maximal
+        // On utilise un epsilon pour amortir le cas des impacts parfaits sur les arêtes/coins
+        if (abs(t_enter - t_min_axes.x) < eps) {
+            // Impact sur l'axe X : la normale dépend du sens du rayon
+            // Si le rayon va vers les X positifs (>0), il tape la face MINIMA (normale pointant vers -X)
+            return select(1, -1, direction.x > 0.0);
+        } else if (abs(t_enter - t_min_axes.y) < eps) {
+            // Impact sur l'axe Y
+            return select(2, -2, direction.y > 0.0);
+        } else {
+            // Impact sur l'axe Z
+            return select(3, -3, direction.z > 0.0);
+        }
+    }
+
+    return 0; // Le rayon rate la boîte
+}
+
+
+
+
+
+fn get_current_block_face_normal(
+    position: WorldPosition,
+    direction: vec3<f32>,
+    cell_corner_position: vec3<u32>,
+    cell_width: f32,
+) -> vec3<f32> {
+    
+    let grid_diff = vec3<i32>(position.grid) - vec3<i32>(cell_corner_position);
+    let local_source = vec3<f32>(grid_diff) + position.fract;
+    let cell_width_f = f32(cell_width);
+
+    let child_min = vec3<f32>(0.);
+    let child_max = child_min + vec3<f32>(cell_width_f);
+
+    let hit_axis = get_child_aabb_hit_face(
+        local_source,
+        direction,
+        child_min,
+        child_max
+    );
+    var normal = vec3<f32>(0.);
+    if (hit_axis == 0) {
+        // no hit
+        return vec3<f32>(0.5, 0.5, 0.5);
+    }
+    if (abs(hit_axis) == 1) {
+        normal.x = f32(sign(hit_axis));
+    } else if (abs(hit_axis) == 2) {
+        normal.y = f32(sign(hit_axis));
+    } else if (abs(hit_axis) == 3) {
+        normal.z = f32(sign(hit_axis));
+    }
+
+    return normal;
+}
+
+fn get_current_block_face_normal_subdivided(
+    position: WorldPosition,
+    direction: vec3<f32>,
+    cell_corner_position: vec3<u32>,
+    hit_id: u32,
+    full_cell_width: u32,
+) -> vec3<f32> {
+    
+    let grid_diff = vec3<i32>(position.grid) - vec3<i32>(cell_corner_position);
+    let local_source = vec3<f32>(grid_diff) + position.fract;
+    let cell_width_f = f32(full_cell_width);
+
+    // get the subblock id
+    var found_child = hit_id / 8u;
+    var found_subchild = hit_id % 8u;
+
+    let block_i = found_child & 1u;
+    let block_j = (found_child >> 1u) & 1u;
+    let block_k = found_child >> 2u;
+
+    let sub_i = found_subchild & 1u;
+    let sub_j = (found_subchild >> 1u) & 1u;
+    let sub_k = found_subchild >> 2u;
+
+    let child_min = 
+        vec3<f32>(vec3<u32>(block_i, block_j, block_k)) * cell_width_f * 0.5 
+        + vec3<f32>(vec3<u32>(sub_i, sub_j, sub_k)) * cell_width_f * 0.25 
+        ;
+    let child_max = child_min + vec3<f32>(cell_width_f) * 0.25;
+
+    let hit_axis = get_child_aabb_hit_face(
+        local_source,
+        direction,
+        child_min,
+        child_max
+    );
+    var normal = vec3<f32>(0.);
+    if (hit_axis == 0) {
+        // no hit
+        return vec3<f32>(0.5, 0.5, 0.5);
+    }
+    if (abs(hit_axis) == 1) {
+        normal.x = f32(sign(hit_axis));
+    } else if (abs(hit_axis) == 2) {
+        normal.y = f32(sign(hit_axis));
+    } else if (abs(hit_axis) == 3) {
+        normal.z = f32(sign(hit_axis));
+    }
+
+    return normal;
+}
+
+
+
 
 
 fn single_raymarch(
@@ -603,6 +786,8 @@ fn single_raymarch(
     max_distance: f32,
 ) -> RaymarchResult {
     let air = Block(0u);
+
+    let default_normal = vec3<f32>(0., 1., 0.);
 
     var actual_steps = 0u;
 
@@ -641,8 +826,21 @@ fn single_raymarch(
         let node: Node = item.node;
 
         // if the current node if a leaf, check if the ray intersects the nodes blocks using the node bitmask
-        if (node.leaf == 1) {
+        let is_leaf = (node.flags & 1u) != 0u;
+        if (is_leaf) {
             // for now, return directly the hit as if the child was full
+
+            // check if the block is full
+            let is_filled_single_block = (node.flags & 2u) != 0u;
+            if (is_filled_single_block) {
+                // second bit is set, this is a full region, 4 by 4, same block
+                // extract the block id and return it
+                // last 16 bits of the flags is the block id
+                let block_id = (node.flags >> 16u) & 65535u;
+                let normal = get_current_block_face_normal(position, direction, item.corner, f32(width));
+                // we are on the block, so no need to move
+                return RaymarchResult(Block(block_id), normal, actual_steps, max_distance, position);
+            }
 
             let hit = check_ray_intersect_leaf(
                 extract_bitmask(node),
@@ -663,8 +861,14 @@ fn single_raymarch(
             } else {
                 // we did hit a block
                 // get the block from the block buffer
+                let normal = get_current_block_face_normal_subdivided(position, direction,  item.corner, hit, width);
                 let block_hit = blocks_list[node.children_ptr + hit];
-                return RaymarchResult(block_hit, actual_steps, max_distance);
+
+                // move the position so it gets to this block
+                let t_range = ray_box_distance_subdivided(position, direction, item.corner, width, hit); 
+                position = offset(position, direction * t_range.x );
+
+                return RaymarchResult(block_hit, normal, actual_steps, max_distance, position);
             }
         } else {
             // this is not a leaf node
@@ -682,7 +886,7 @@ fn single_raymarch(
             if (hit != NODE_EMPTY) {
                 // --- CAS A : ON DESCEND VERS UN ENFANT OCCUPÉ ---
                 let child_ptr = child_list[node.children_ptr + hit];
-                if (child_ptr == NODE_EMPTY) { return RaymarchResult(air, actual_steps, max_distance); }
+                if (child_ptr == NODE_EMPTY) { return RaymarchResult(air, default_normal, actual_steps, max_distance, position); }
 
                 let own_half_width = level_to_width(node_stack_size());
                 let i = hit % 2u;
@@ -723,7 +927,7 @@ fn single_raymarch(
         }
     }
 
-    return RaymarchResult(air, actual_steps, max_distance);
+    return RaymarchResult(air, default_normal, actual_steps, max_distance, position);
 }
 
 
@@ -861,7 +1065,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     */
 
     if (result.hit.id != 0) {
-        return color_palette[result.hit.id];
+        let sun_dir = normalize(vec3<f32>(0.3, 0.6, 0.7)); 
+
+        let normal = result.normal;
+
+        // make a second raycast towards the sun to see if hard shadows should hit here
+        let new_position = offset(result.position, normal * 0.001);
+        let second_result = single_raymarch(
+            new_position, 
+            sun_dir,
+            2e20,
+        );
+
+        var light = 0.05;
+
+        if (second_result.hit.id == 0) {
+            // we reached the skybox
+            light = clamp(light, 1.0, dot(normal, sun_dir));
+        }
+
+        return color_palette[result.hit.id] * light;
     }
 
     /*
